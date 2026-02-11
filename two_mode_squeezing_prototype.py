@@ -14,25 +14,9 @@ from jaxopt import AndersonAcceleration
 # broader shell output before linebreaks for debugging 
 np.set_printoptions(linewidth=300, edgeitems=10)
 
-# Timer class for simple runtime checking
-class Timer:
-    def __init__(self):
-        self.start_time = None
-        self.end_time = None
-    
-    def start(self):
-        self.start_time = time.perf_counter()
-    
-    def stop(self):
-        self.end_time = time.perf_counter()
-        return self.elapsed()
-    
-    def elapsed(self):
-        if self.start_time is None:
-            raise ValueError("Timer not started")
-        if self.end_time is None:
-            return time.perf_counter() - self.start_time
-        return self.end_time - self.start_time
+from matplotlib.animation import FuncAnimation
+from utilities import Timer
+
 
 # simulation results class for plotting & analytics
 class SimResults:
@@ -161,6 +145,80 @@ class SimResults:
         
         plt.tight_layout()
         plt.show()
+
+
+    def animate_phase_space(self, N=20, plotting_sample_step=2):
+        """
+        Create an animation of the phase space (n, Phi) over time.
+        Shows only current points (not trajectory history) using vectorized scatter plot.
+        Also includes a second subplot showing the full trajectory of J_array up to current time.
+        
+        Parameters:
+        N (int): Number of sample trajectories to plot.
+        plotting_sample_step (int): Plot every nth time sample.
+        """
+        # Select random sample indices
+        sample_indices = np.random.choice(self.num_trajectories, min(N, self.num_trajectories), replace=False)
+        
+        # Set up the figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), dpi=400, gridspec_kw={'height_ratios': [3, 1]})
+        
+        # Set up phase space plot (top subplot)
+        ax1.set_xlabel('n')
+        ax1.set_ylabel('Phi')
+        ax1.set_title('Phase Space Trajectories (Current Points Only)')
+        ax1.grid(False)
+        
+        # Initialize with empty scatter plot - vectorized approach
+        scatter = ax1.scatter([], [], s=20, c='grey', alpha=0.5, edgecolors='none')
+        
+        # Set axis limits based on the data
+        n_min, n_max = np.min(self.traj[:, :, 0]), np.max(self.traj[:, :, 0])
+        phi_min, phi_max = np.min(self.traj[:, :, 1]), np.max(self.traj[:, :, 1])
+        ax1.set_xlim(n_min - 0.1*(n_max - n_min), n_max + 0.1*(n_max - n_min))
+        ax1.set_ylim(phi_min - 0.1*(phi_max - phi_min), phi_max + 0.1*(phi_max - phi_min))
+        
+        # Time label
+        time_text = ax1.text(0.02, 0.95, '', transform=ax1.transAxes)
+        
+        # Set up J_array plot (bottom subplot)
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('J(t)')
+        ax2.set_title('Input Trajectory')
+        ax2.grid(True)
+        ax2.set_xlim(0, self.t_array[-1])
+        
+        # Initialize empty line for J_array plot
+        line, = ax2.plot([], [], lw=2, color='blue')
+        ax2.set_ylim(np.min(self.J_array) - 0.1*(np.max(self.J_array) - np.min(self.J_array)),
+                     np.max(self.J_array) + 0.1*(np.max(self.J_array) - np.min(self.J_array)))
+        
+        # Animation update function - vectorized version
+        def update(frame):
+            current_step = frame * plotting_sample_step
+            
+            # Update phase space plot
+            current_positions = self.traj[sample_indices, current_step, :]
+            scatter.set_offsets(current_positions)
+            time_text.set_text(f'Time: {self.t_array[current_step]:.2f} s')
+            
+            # Update J_array plot
+            line.set_data(self.t_array[:current_step+1], self.J_array[:current_step+1])
+            
+            return [scatter, time_text, line]
+        
+        # Create animation with blit=False for better quality with scatter plots
+        num_frames = self.num_time_steps // plotting_sample_step
+        ani = FuncAnimation(
+            fig, update, frames=num_frames,
+            interval=50, blit=False, repeat=False
+        )
+        
+        plt.tight_layout()
+        plt.close(fig)
+        return ani
+
+
     
 @jit
 def Josephson_step(x, J, U, dt, params):
@@ -380,6 +438,7 @@ def J_array_iteration(J_in_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_b
     n_traj = traj[:,:,0]
     Phi_traj = traj[:,:,1]
     n_avg_traj = jnp.mean(n_traj, axis=0)
+
     # lambda_0_array = jnp.zeros_like(x_0_array) # the costate at final time is zero due to the cost function's definitions
     lambda_n_0_array = 2*c_n/num_traj* ( n_traj[:,-1]-n_avg_traj[-1] )
     lambda_Phi_0_array = jnp.zeros_like(lambda_n_0_array)
@@ -514,7 +573,7 @@ if __name__ == "__main__":
     # J_traj = run_simple_J_descent(J_traj, U_traj, x_0_array, dt, 100, 0.3, J_baseline, params, 100)
     # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 300, 0.08, J_baseline, params, 4)
     J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params)
-    # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, 2)
+    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, 2)
 
     # J_traj = J_baseline* ( jnp.ones_like(J_traj) + jnp.sin(4*jnp.pi*plasma_frequency * time_array) )    
     
@@ -534,5 +593,15 @@ if __name__ == "__main__":
     # plot trajectories and variances
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
     sim_results.plot_variances(plotting_sample_step=1)
+
+    # Create animation with smaller sample to avoid size issues
+    phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
+    
+    # Save the animation to a file
+    phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
+    print("Animation saved as 'phase_space_animation.mp4'")
+    
+    # Display the animation
+    plt.show()
 
     
