@@ -161,7 +161,6 @@ class SimResults:
         
         plt.tight_layout()
         plt.show()
-
     
 @jit
 def Josephson_step(x, J, U, dt, params):
@@ -483,6 +482,8 @@ if __name__ == "__main__":
     # t_final = 3/plasma_frequency
     t_final = 40e-3
     num_steps = int(500)
+
+    
     dt = t_final / num_steps
     time_array = jnp.linspace(0, t_final, num_steps)
 
@@ -513,7 +514,7 @@ if __name__ == "__main__":
     # J_traj = run_simple_J_descent(J_traj, U_traj, x_0_array, dt, 100, 0.3, J_baseline, params, 100)
     # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 300, 0.08, J_baseline, params, 4)
     J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params)
-    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, 2)
+    # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, 2)
 
     # J_traj = J_baseline* ( jnp.ones_like(J_traj) + jnp.sin(4*jnp.pi*plasma_frequency * time_array) )    
     
