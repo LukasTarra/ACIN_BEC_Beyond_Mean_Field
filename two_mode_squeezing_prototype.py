@@ -279,6 +279,47 @@ class SimResults:
         
         # Update number of time steps
         self.num_time_steps = len(self.t_array)
+        
+
+    def simulate_onwards_w_decaying_J_and_final_U(self, sim_duration, dt, decay_time):
+        """
+        Continue the simulation from the final state using exponentially decaying J and constant final U.
+        
+        Parameters:
+        sim_duration (float): Duration of the continuation simulation in seconds.
+        dt (float): Time step for the continuation simulation.
+        decay_time (float): Time constant for exponential decay of J.
+        """
+        # Get final values from current simulation
+        final_J = self.J_array[-1]
+        final_U = self.U_array[-1]
+        final_x = self.traj[:, -1, :]  # Final states for all trajectories
+        
+        # Create new time array for continuation
+        num_new_steps = int(sim_duration / dt)
+        new_t_array = np.linspace(0, sim_duration, num_new_steps)
+        
+        # Create exponentially decaying J array and constant U array
+        new_J_array = final_J * np.exp(-new_t_array / decay_time)
+        new_U_array = np.ones(num_new_steps) * final_U
+        
+        # Simulate forward from final states
+        new_traj = sim_forward_vmap(new_J_array, new_U_array, final_x, dt, self.params)
+        new_traj = np.array(new_traj)
+        
+        # Concatenate the results
+        # Update time array (shift new times by final time of original simulation)
+        self.t_array = np.concatenate([self.t_array, self.t_array[-1] + new_t_array])
+        
+        # Update trajectories
+        self.traj = np.concatenate([self.traj, new_traj], axis=1)
+        
+        # Update J and U arrays
+        self.J_array = np.concatenate([self.J_array, new_J_array])
+        self.U_array = np.concatenate([self.U_array, new_U_array])
+        
+        # Update number of time steps
+        self.num_time_steps = len(self.t_array)
 
 
 @jit
@@ -595,8 +636,9 @@ if __name__ == "__main__":
     # create SimResults object
     sim_results = SimResults(time_array, trajectories, (variance_0_n, variance_0_Phi), J_traj, U_traj, params)
 
-    #simulate onwards with constant J&U to test stability of the result
+    #simulate onwards (either constant or decaying J) to test stability of the result
     sim_results.simulate_onwards_w_final_J_and_U(40e-3, dt)
+    # sim_results.simulate_onwards_w_decaying_J_and_final_U(40e-3, dt, 0.1e-3)
     
     # plot trajectories and variances
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
