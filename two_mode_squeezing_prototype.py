@@ -21,7 +21,7 @@ from utilities import Timer
 
 # simulation results class for plotting & analytics
 class SimResults:
-    def __init__(self, t_array, traj, var_0, J_array):
+    def __init__(self, t_array, traj, var_0, J_array, U_array, params):
         """
         Initialize the simulation results container.
         
@@ -32,6 +32,9 @@ class SimResults:
         var_0 : tuple of initial variances:
         - var_0_n (float): Initial variance of n.
         - var_0_Phi (float): Initial variance of Phi.
+        J_array: array in time that describes the tunnel coupling J.
+        U_array: array in time that describes the nonlinear double-well energy U.
+        params: dict that includes the generic BEC parameters {hbar, N, E}
         """
         var_0_n, var_0_Phi = var_0
 
@@ -41,6 +44,8 @@ class SimResults:
         self.var_0_Phi = var_0_Phi
         self.num_trajectories, self.num_time_steps, _ = traj.shape
         self.J_array = J_array
+        self.U_array = U_array
+        self.params = params
 
     def plot_trajectories(self, N=20, plotting_sample_step=2, plot_mean=True):
         """
@@ -235,6 +240,45 @@ class SimResults:
         plt.tight_layout()
         plt.close(fig)
         return ani
+
+    def simulate_onwards_w_final_J_and_U(self, sim_duration, dt):
+        """
+        Continue the simulation from the final state using constant final values of J and U.
+        
+        Parameters:
+        sim_duration (float): Duration of the continuation simulation in seconds.
+        dt (float): Time step for the continuation simulation.
+        """
+        # Get final values from current simulation
+        final_J = self.J_array[-1]
+        final_U = self.U_array[-1]
+        final_x = self.traj[:, -1, :]  # Final states for all trajectories
+        
+        # Create new time array for continuation
+        num_new_steps = int(sim_duration / dt)
+        new_t_array = np.linspace(0, sim_duration, num_new_steps)
+        
+        # Create constant J and U arrays with final values
+        new_J_array = np.ones(num_new_steps) * final_J
+        new_U_array = np.ones(num_new_steps) * final_U
+        
+        # Simulate forward from final states
+        new_traj = sim_forward_vmap(new_J_array, new_U_array, final_x, dt, self.params)
+        new_traj = np.array(new_traj)
+        
+        # Concatenate the results
+        # Update time array (shift new times by final time of original simulation)
+        self.t_array = np.concatenate([self.t_array, self.t_array[-1] + new_t_array])
+        
+        # Update trajectories
+        self.traj = np.concatenate([self.traj, new_traj], axis=1)
+        
+        # Update J and U arrays
+        self.J_array = np.concatenate([self.J_array, new_J_array])
+        self.U_array = np.concatenate([self.U_array, new_U_array])
+        
+        # Update number of time steps
+        self.num_time_steps = len(self.t_array)
 
 
 @jit
@@ -511,7 +555,7 @@ if __name__ == "__main__":
     Phi_0_mean = jnp.mean(Phi_samples)
     plasma_frequency = 2*J_baseline/(params['hbar']*2*jnp.pi) * jnp.sqrt(Phi_0_mean + Lambda_baseline)
     # t_final = 3/plasma_frequency
-    t_final = 10e-3
+    t_final = 40e-3
     num_steps = int(500)
 
     dt = t_final / num_steps
@@ -534,7 +578,7 @@ if __name__ == "__main__":
     ## run a descent to solve the optimality conditions for J with the improved cost function (J derivative)
     # J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params, J_array_iteration)
     J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 10, 1e-2, J_baseline, params, J_array_iteration_w_deriv_cost)
-    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 200, 5e-4, J_baseline, params, J_array_iteration_w_deriv_cost, 2)
+    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 600, 5e-4, J_baseline, params, J_array_iteration_w_deriv_cost, 2)
 
     ## ad-hoc ansatz
     # J_traj = J_baseline* ( jnp.ones_like(J_traj) + jnp.sin(4*jnp.pi*plasma_frequency * time_array) )    
@@ -549,17 +593,21 @@ if __name__ == "__main__":
     _ = timer.stop()
     
     # create SimResults object
-    sim_results = SimResults(time_array, trajectories, (variance_0_n, variance_0_Phi), J_traj )
+    sim_results = SimResults(time_array, trajectories, (variance_0_n, variance_0_Phi), J_traj, U_traj, params)
+
+    #simulate onwards with constant J&U to test stability of the result
+    sim_results.simulate_onwards_w_final_J_and_U(40e-3, dt)
+    
     # plot trajectories and variances
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
     sim_results.plot_variances(plotting_sample_step=1)
 
-    # # Create animation with smaller sample to avoid size issues
-    # phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
-    # # Save the animation to a file
-    # phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
-    # print("Animation saved as 'phase_space_animation.mp4'")
-    # # Display the animation
-    # plt.show()
+    # Create animation with smaller sample to avoid size issues
+    phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
+    # Save the animation to a file
+    phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
+    print("Animation saved as 'phase_space_animation.mp4'")
+    # Display the animation
+    plt.show()
 
     
