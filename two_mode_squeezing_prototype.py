@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax import jit, vmap, random, jacobian # , profiler
 import jax.debug as jdebug
 from jax.lax import scan, fori_loop
+from quadax import cumulative_trapezoid
 from functools import partial
 import pdb
 # import jax.scipy.optimize as jopt
@@ -102,7 +103,8 @@ class SimResults:
 
     def plot_variances(self, plotting_sample_step=2):
         """
-        Plot the variances of n and Phi over time.
+        Plot the variances of n and Phi over time, the input trajectory,
+        and the product of the variances.
         
         Parameters:
         plotting_sample_step (int): Plot every nth time sample.
@@ -112,8 +114,8 @@ class SimResults:
         var_n = np.var(self.traj[:, :, 0], axis=0)
         var_phi = np.var(self.traj[:, :, 1], axis=0)
         
-        # Create plots
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
+        # Create plots (increased to 4 subplots)
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(12, 10))
         
         # Plot variance of n
         ax1.plot(self.t_array[::plotting_sample_step], 
@@ -137,11 +139,27 @@ class SimResults:
         ax2.legend()
         ax2.grid(True)
 
-        ax3.plot(self.t_array[::plotting_sample_step],self.J_array[::plotting_sample_step], linewidth=1.2)
+        # Plot Input trajectory
+        ax3.plot(self.t_array[::plotting_sample_step], self.J_array[::plotting_sample_step], linewidth=1.2)
         ax3.set_xlabel('Time (s)')
         ax3.set_ylabel('J(t)')
         ax3.set_title('Input trajectory')
         ax3.grid(True)
+        
+        # Plot Product of Variances
+        var_product = var_n * var_phi
+        initial_product = self.var_0_n * self.var_0_Phi
+        
+        ax4.plot(self.t_array[::plotting_sample_step], 
+                 var_product[::plotting_sample_step], 
+                 linewidth=1.2, color="blue")
+        ax4.axhline(y=initial_product, color='red'
+                    , linestyle='--', label=f'Initial product: {initial_product:.2e}')
+        ax4.set_xlabel('Time (s)')
+        ax4.set_ylabel(r'Variance Product ($n \cdot \Phi$)')
+        ax4.set_title('Product of Variances over Time')
+        ax4.legend()
+        ax4.grid(True)
         
         plt.tight_layout()
         plt.show()
@@ -219,7 +237,6 @@ class SimResults:
         return ani
 
 
-    
 @jit
 def Josephson_step(x, J, U, dt, params):
     """
@@ -285,87 +302,6 @@ def simulate_single_traj(J_traj, U_traj, x_0, dt, params):
     return traj
 
 sim_forward_vmap = (vmap(simulate_single_traj, in_axes=(None, None, 0, None, None), out_axes=0))
-
-#cost function for traj optimization
-@jit
-def traj_cost_function(input_array, traj, t_array, cost_weights, input_base, f_p):
-    c_n, c_J_deriv, c_J_abs = cost_weights
-    # T = t_array[-1]
-    delta_t = 1/(4*jnp.pi*f_p)
-    var_n_traj = jnp.var(traj[:, :, 0], axis=0)
-    # cost_n = c_n / T * jnp.trapezoid(var_n_traj, x=t_array)
-    cost_n = c_n * jnp.trapezoid(var_n_traj, x=t_array)
-    cost_J_deriv = c_J_deriv * (delta_t/input_base)**2 * jnp.trapezoid(jnp.gradient(input_array,t_array)**2, x=t_array)
-    # cost_J_abs = 0
-    cost_J_abs = c_J_abs * jnp.trapezoid(((input_array-input_base)/input_base)**2, x=t_array)
-    
-    return cost_n + cost_J_deriv + cost_J_abs
-
-@jit
-def input_guess_fun(t, input_amplitude, input_frequency, input_phase, input_offset, base_parameters):
-    base_amplitude, base_frequency, base_phase, base_offset = base_parameters
-    return jnp.array(input_amplitude*base_amplitude* jnp.sin(2*jnp.pi*input_frequency*base_frequency*t + input_phase*base_phase) + input_offset*base_offset)
-
-def sim_and_cost_guess_fun(input_choice, input_amplitude, input_frequency, input_phase, input_offset, base_parameters, cost_weights, input_base, f_p, other_input_array,  x_0_array, t_array, dt, params):
-    if input_choice == "J":
-        J_array = input_guess_fun(t_array, input_amplitude, input_frequency, input_phase, input_offset, base_parameters)
-        U_array = other_input_array
-    elif input_choice == "U":
-        J_array = other_input_array
-        U_array = input_guess_fun(t_array, input_amplitude, input_frequency, input_phase, input_offset, base_parameters)
-    else:
-        raise ValueError("input choice must be either J or U.")
-    traj = sim_forward_vmap(J_array, U_array, x_0_array, dt, params)
-
-    if input_choice == "J":
-        cost = traj_cost_function(J_array, traj, t_array, cost_weights, input_base, f_p)
-    elif input_choice == "U":
-        cost = traj_cost_function(U_array, traj, t_array, cost_weights, input_base, f_p)
-    else:
-        raise ValueError("input choice must be either J or U.")
-    return cost
-
-def optimize_J_guess_fun_BFGS(initial_opt_var, base_parameters, cost_weights, J_base, f_p, U_array, x_0_array, t_array, dt, params):
-    
-    def wrapper(opt_var):
-        amp, freq, phase, offset = opt_var
-        return sim_and_cost_guess_fun("J", amp, freq, phase, offset, base_parameters, cost_weights, J_base, f_p, U_array, x_0_array, t_array, dt, params)
-
-    # result = jopt.minimize(wrapper, initial_opt_var, method='BFGS')
-    lbfgsb = ScipyBoundedMinimize(fun=wrapper, method="slsqp", maxiter=1000)
-    lower_bounds = jnp.array([0, 0.1, -1, 0.5])
-    upper_bounds = jnp.array([0.5, 2.2, 1, 3])
-    bounds = (lower_bounds, upper_bounds)
-    lbfgsb_sol = lbfgsb.run(initial_opt_var, bounds=bounds)
-    
-    # lbfgsb = LBFGSB(fun=wrapper, maxiter=100, verbose=True)
-    # lower_bounds = jnp.array([0, -jnp.pi, 0.5])
-    # upper_bounds = jnp.array([0.5, jnp.pi, 1])
-    # bounds = (lower_bounds, upper_bounds)
-    # lbfgsb_sol = lbfgsb.run(initial_opt_var, bounds=bounds)
-    
-    return lbfgsb_sol.params
-
-# def optimize_U_guess_fun_BFGS(initial_opt_var, cost_weights, U_base, f_p, J_array, x_0_array, t_array, dt, params):
-    
-#     def wrapper(opt_var):
-#         amp, freq, phase, offset = opt_var
-#         return sim_and_cost_guess_fun("U", amp, freq, phase, offset, cost_weights, U_base, f_p, J_array, x_0_array, t_array, dt, params)
-
-#     # # result = jopt.minimize(wrapper, initial_opt_var, method='BFGS')
-#     # lbfgsb = ScipyBoundedMinimize(fun=wrapper, method="slsqp", maxiter=500)
-#     # lower_bounds = jnp.array([0, -jnp.pi, 0.3])
-#     # upper_bounds = jnp.array([0.3, jnp.pi, 1])
-#     # bounds = (lower_bounds, upper_bounds)
-#     # lbfgsb_sol = lbfgsb.run(initial_opt_var, bounds=bounds)
-
-#     lbfgsb = LBFGSB(fun=wrapper, maxiter=100, verbose=True)
-#     lower_bounds = jnp.array([0, -jnp.pi, 0.3])
-#     upper_bounds = jnp.array([0.3, jnp.pi, 1])
-#     bounds = (lower_bounds, upper_bounds)
-#     lbfgsb_sol = lbfgsb.run(initial_opt_var, bounds=bounds)
-    
-#     return lbfgsb_sol.params
 
 
 # might cut n_avg from the input as this becomes more settled
@@ -459,23 +395,60 @@ def J_array_iteration(J_in_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_b
     
     return J_out_array
 
-def run_simple_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params, max_iter=50):
+
+@jit
+def J_array_iteration_w_deriv_cost(J_in_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params):
+    # load parameters
+    hbar = params['hbar']
+    num_traj = x_0_array.shape[0]
+    
+    # simulate the Josephson system foward for n and Phi
+    traj = sim_forward_vmap(J_in_array, U_array, x_0_array, dt, params)
+    n_traj = traj[:,:,0]
+    Phi_traj = traj[:,:,1]
+    n_avg_traj = jnp.mean(n_traj, axis=0)
+
+    # lambda_0_array = jnp.zeros_like(x_0_array) # the costate at final time is zero due to the cost function's definitions
+    lambda_n_0_array = 2*c_n/num_traj* ( n_traj[:,-1]-n_avg_traj[-1] )
+    lambda_Phi_0_array = jnp.zeros_like(lambda_n_0_array)
+    # lambda_0_array = jnp.concatenate((lambda_n_0_array, lambda_Phi_0_array), axis=1)
+    lambda_0_array = jnp.column_stack([lambda_n_0_array, lambda_Phi_0_array])
+    
+    # simulate the costate system backward, starting from lambda_0_array
+    lambda_traj_rev = sim_costate_vmap(J_in_array[::-1], U_array[::-1], n_traj[:, ::-1], n_avg_traj[::-1], Phi_traj[:, ::-1], lambda_0_array, num_traj, c_n, -1* dt, params)
+    lambda_traj = lambda_traj_rev[:, ::-1, :]
+    lambda_n_traj = lambda_traj[:,:,0]
+    lambda_Phi_traj = lambda_traj[:,:,1]
+
+    # compute the derivative of lambda_J and derive J by integrating & subtracting final value (to enforce it being zero at T)
+    sqrt_1_minus_n2 = jnp.sqrt(1-n_traj**2)
+    lambda_J_deriv = 2/hbar* jnp.sum( sqrt_1_minus_n2*jnp.sin(Phi_traj)*lambda_n_traj - n_traj/sqrt_1_minus_n2*jnp.cos(Phi_traj)*lambda_Phi_traj , axis=0)
+    lambda_J_traj = cumulative_trapezoid(lambda_J_deriv, x=t_array, initial=0)
+    lambda_J_traj -= lambda_J_traj[-1]
+
+    # Perform control update for J
+    J_out_array = J_base - 0.5*J_base**2/(c_J*t_array[-1]**2) * cumulative_trapezoid(lambda_J_traj, x=t_array, initial=0)
+    
+    return J_out_array
+
+
+def run_simple_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params, iteration_fun, max_iter=50):
     """Iterate the J_array iteration for max_iter iterations."""
 
     def iteration_wrapper(i, val):
-        return J_array_iteration(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params)
+        return iteration_fun(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params)
     
     J_out_array = fori_loop(0, max_iter, iteration_wrapper, J_init_array)
 
     return J_out_array
 
 
-def run_Newton_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params, max_iter=50):
+def run_Newton_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params, iteration_fun, max_iter=50):
     """Iterate the J_array iteration for max_iter iterations."""
 
     @jit
     def f(val):
-        return J_array_iteration(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params) - val
+        return iteration_fun(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params) - val
     
     f_Jacobian = jacobian(f)
 
@@ -491,11 +464,11 @@ def run_Newton_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J
     return J_out_array
 
 
-def run_FixedPoint_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params):
+def run_FixedPoint_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params, iteration_fun):
     """Iterate the J_array iteration for max_iter iterations."""
 
     def f(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params):
-        return J_array_iteration(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params)
+        return iteration_fun(val, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params)
     
     # Configure history_size (m) based on your problem
     # Higher m = faster convergence but more memory and potential instability
@@ -503,7 +476,6 @@ def run_FixedPoint_J_descent(J_init_array, U_array, x_0_array, dt, t_array, c_n,
     J_out_array = accel.run(J_init_array, U_array, x_0_array, dt, t_array, c_n, c_J, J_base, params)  # initial_p is your initial guess
     
     return J_out_array.params
-
 
 
 if __name__ == "__main__":
@@ -539,10 +511,9 @@ if __name__ == "__main__":
     Phi_0_mean = jnp.mean(Phi_samples)
     plasma_frequency = 2*J_baseline/(params['hbar']*2*jnp.pi) * jnp.sqrt(Phi_0_mean + Lambda_baseline)
     # t_final = 3/plasma_frequency
-    t_final = 40e-3
+    t_final = 10e-3
     num_steps = int(500)
 
-    
     dt = t_final / num_steps
     time_array = jnp.linspace(0, t_final, num_steps)
 
@@ -556,25 +527,16 @@ if __name__ == "__main__":
     J_traj = jnp.ones(num_steps) * J_baseline
     U_traj = jnp.ones(num_steps) * U_baseline
 
-    # # optimize the trajectory (basis function approach) for J
-    # initial_opt_var = jnp.array([0.1, 2, 0.5, 1])
-    # opt_base_parameters = J_baseline, plasma_frequency, jnp.pi, J_baseline
-    # # initial_opt_var = jnp.array([0.2*U_baseline, 1.25*jnp.pi/2, 0.8*U_baseline])
-    # c_params = 1e7, 1e2, 1e2
-    # opt_variables_out = np.array(optimize_J_guess_fun_BFGS(initial_opt_var, opt_base_parameters, c_params, J_baseline, plasma_frequency, U_traj, x_0_array, time_array, dt, params))
-    # J_traj = input_guess_fun(time_array, opt_variables_out[0], opt_variables_out[1], opt_variables_out[2], opt_variables_out[3], opt_base_parameters)
-    # print("Initial relative parameters:")
-    # print(np.array(initial_opt_var))    
-    # print("Optimized relative parameters:")
-    # print(opt_variables_out)
-    # #print("Resulting cost value:")
-    # #print(np.array(traj_cost_function(J_traj, trajectories, time_array, c_params, opt_base_parameters, plasma_frequency)))
+    # ## run a descent to solve the optimality conditions for J with the original cost function (J deviations from J_base)
+    # J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params, J_array_iteration)
+    # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, J_array_iteration, 2)
 
-    # J_traj = run_simple_J_descent(J_traj, U_traj, x_0_array, dt, 100, 0.3, J_baseline, params, 100)
-    # J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 300, 0.08, J_baseline, params, 4)
-    J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params)
-    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 2e1, 1e-2, J_baseline, params, 2)
+    ## run a descent to solve the optimality conditions for J with the improved cost function (J derivative)
+    # J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params, J_array_iteration)
+    J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 10, 1e-2, J_baseline, params, J_array_iteration_w_deriv_cost)
+    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 200, 5e-4, J_baseline, params, J_array_iteration_w_deriv_cost, 2)
 
+    ## ad-hoc ansatz
     # J_traj = J_baseline* ( jnp.ones_like(J_traj) + jnp.sin(4*jnp.pi*plasma_frequency * time_array) )    
     
     # run simulation with the optimized trajectory
@@ -584,9 +546,7 @@ if __name__ == "__main__":
     # Run the simulation
     trajectories = sim_forward_vmap(J_traj, U_traj, x_0_array, dt, params)
     trajectories = np.array(trajectories)
-    timer.stop()
-    print(f"Simulation completed in {timer.elapsed():.4f} seconds")
-
+    _ = timer.stop()
     
     # create SimResults object
     sim_results = SimResults(time_array, trajectories, (variance_0_n, variance_0_Phi), J_traj )
@@ -594,14 +554,12 @@ if __name__ == "__main__":
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
     sim_results.plot_variances(plotting_sample_step=1)
 
-    # Create animation with smaller sample to avoid size issues
-    phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
-    
-    # Save the animation to a file
-    phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
-    print("Animation saved as 'phase_space_animation.mp4'")
-    
-    # Display the animation
-    plt.show()
+    # # Create animation with smaller sample to avoid size issues
+    # phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
+    # # Save the animation to a file
+    # phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
+    # print("Animation saved as 'phase_space_animation.mp4'")
+    # # Display the animation
+    # plt.show()
 
     
