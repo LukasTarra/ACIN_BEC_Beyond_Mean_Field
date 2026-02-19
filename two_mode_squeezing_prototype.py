@@ -14,8 +14,10 @@ from jaxopt import ScipyBoundedMinimize
 from jaxopt import AndersonAcceleration
 # broader shell output before linebreaks for debugging 
 np.set_printoptions(linewidth=300, edgeitems=10)
-
 from matplotlib.animation import FuncAnimation
+import os
+import csv
+
 from utilities import Timer
 
 
@@ -239,7 +241,13 @@ class SimResults:
         
         plt.tight_layout()
         plt.close(fig)
-        return ani
+
+         # Save the animation to a file
+        ani.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
+        print("Animation saved as: phase_space_animation.mp4")
+        # Display the animation
+        plt.show()
+
 
     def simulate_onwards_w_final_J_and_U(self, sim_duration, dt):
         """
@@ -320,6 +328,29 @@ class SimResults:
         
         # Update number of time steps
         self.num_time_steps = len(self.t_array)
+
+    def save_to_csv(self, filename="sim_results.csv", directory="./"):
+        """save the simulation results in a csv file with given name and directory.
+        rows in the file: t, J, U, var_n, var_Phi
+        """
+        filepath = os.path.join(directory, filename)
+        var_n = np.var(self.traj[:, :, 0], axis=0)
+        var_Phi = np.var(self.traj[:, :, 1], axis=0)
+
+        with open(filepath, mode='w', newline='') as f:
+            writer = csv.writer(f)
+
+            if hasattr(self, 't_array') and hasattr(self, 'J_array') and hasattr(self, 'U_array'):
+                # Prepare header
+                header = ['t (s)', 'J (Hz)', 'U (Hz)', 'var_n (1)', 'var_Phi (rad)']
+                writer.writerow(header)
+                # Write rows
+                for i in range(self.num_time_steps):
+                    row = [self.t_array[i], self.J_array[i], self.U_array[i], var_n[i], var_Phi[i]]
+                    writer.writerow(row)
+                print("Saved the simulation results to: "+filename)
+            else:
+                print("Not all necessary attributes for saving are contained in this Simresults instance. Abort.")
 
 
 @jit
@@ -644,12 +675,9 @@ if __name__ == "__main__":
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
     sim_results.plot_variances(plotting_sample_step=1)
 
+    # save simulation results to csv
+    sim_results.save_to_csv()
     # Create animation with smaller sample to avoid size issues
-    phase_space_animation = sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
-    # Save the animation to a file
-    phase_space_animation.save('phase_space_animation.mp4', writer='ffmpeg', fps=6, dpi=80)
-    print("Animation saved as 'phase_space_animation.mp4'")
-    # Display the animation
-    plt.show()
+    sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
 
     
