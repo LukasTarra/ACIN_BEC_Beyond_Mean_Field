@@ -65,9 +65,12 @@ class SimResults:
         # Calculate means
         mean_n = np.mean(self.traj[:, :, 0], axis=0)
         mean_phi = np.mean(self.traj[:, :, 1], axis=0)
+
+        # compute the plasma frequency over time
+        self.plasma_freq_array = 2*self.J_array/(self.params['hbar']*2*np.pi) * np.sqrt(mean_phi + self.U_array*self.params["N"]/(2*self.J_array))
         
         # Create plots
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(12, 10))
         
         # Plot n trajectories
         for i in sample_indices:
@@ -99,12 +102,20 @@ class SimResults:
         ax2.legend(loc='upper right')
         ax2.grid(True)
 
+        # plot the J trajectory
         ax3.plot(self.t_array[::plotting_sample_step],self.J_array[::plotting_sample_step], linewidth=1.2)
         ax3.set_xlabel('Time (s)')
         ax3.set_ylabel('J(t)')
         ax3.set_title('Input trajectory')
         ax3.grid(True)
-        
+
+        # plot the plasma frequency
+        ax4.plot(self.t_array[::plotting_sample_step],self.plasma_freq_array[::plotting_sample_step], linewidth=1.2)
+        ax4.set_xlabel('Time (s)')
+        ax4.set_ylabel(r'$f_p$ (Hz)')
+        ax4.set_title('Plasma frequency')
+        ax4.grid(True)
+
         plt.tight_layout()
         plt.show()
 
@@ -337,22 +348,27 @@ class SimResults:
         var_n = np.var(self.traj[:, :, 0], axis=0)
         var_Phi = np.var(self.traj[:, :, 1], axis=0)
 
+        # compute the plasma frequency over time if not already an attribute
+        if not hasattr(self, "plasma_freq_array"):
+            mean_phi = np.mean(self.traj[:, :, 1], axis=0)
+            self.plasma_freq_array = 2*self.J_array/(self.params['hbar']*2*np.pi) * np.sqrt(mean_phi + self.U_array*self.params["N"]/(2*self.J_array))
+
         with open(filepath, mode='w', newline='') as f:
             writer = csv.writer(f)
 
-            if hasattr(self, 't_array') and hasattr(self, 'J_array') and hasattr(self, 'U_array'):
+            if hasattr(self, 't_array') and hasattr(self, 'J_array') and hasattr(self, 'U_array') and hasattr(self, 'plasma_freq_array'):
                 # Prepare header
-                header = ['t (s)', 'J (Hz)', 'U (Hz)', 'var_n (1)', 'var_Phi (rad)']
+                header = ['t (s)', 'J (Hz)', 'U (Hz)', 'var_n (1)', 'var_Phi (rad)', 'f_plasma (Hz)']
                 writer.writerow(header)
                 # Write rows
                 for i in range(self.num_time_steps):
-                    row = [self.t_array[i], self.J_array[i], self.U_array[i], var_n[i], var_Phi[i]]
+                    row = [self.t_array[i], self.J_array[i], self.U_array[i], var_n[i], var_Phi[i], self.plasma_freq_array[i]]
                     writer.writerow(row)
                 print("Saved the simulation results to: "+filename)
             else:
                 print("Not all necessary attributes for saving are contained in this Simresults instance. Abort.")
 
-
+                
 @jit
 def Josephson_step(x, J, U, dt, params):
     """
@@ -650,7 +666,7 @@ if __name__ == "__main__":
     ## run a descent to solve the optimality conditions for J with the improved cost function (J derivative)
     # J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5e0, 10e-2, J_baseline, params, J_array_iteration)
     J_traj = run_FixedPoint_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 10, 1e-2, J_baseline, params, J_array_iteration_w_deriv_cost)
-    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 600, 5e-4, J_baseline, params, J_array_iteration_w_deriv_cost, 2)
+    J_traj = run_Newton_J_descent(J_traj, U_traj, x_0_array, dt, time_array, 5000, 5e-4, J_baseline, params, J_array_iteration_w_deriv_cost, 2)
 
     ## ad-hoc ansatz
     # J_traj = J_baseline* ( jnp.ones_like(J_traj) + jnp.sin(4*jnp.pi*plasma_frequency * time_array) )    
@@ -675,9 +691,10 @@ if __name__ == "__main__":
     sim_results.plot_trajectories(N=num_trajectories, plotting_sample_step=1, plot_mean=True)
     sim_results.plot_variances(plotting_sample_step=1)
 
-    # save simulation results to csv
-    sim_results.save_to_csv()
-    # Create animation with smaller sample to avoid size issues
-    sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
+    # # save simulation results to csv
+    # sim_results.save_to_csv("sim_results_40ms_insane.csv")
+    # # Create animation with smaller sample to avoid size issues
+    # sim_results.animate_phase_space(N=min(250, num_trajectories), plotting_sample_step=4)
 
+    
     
