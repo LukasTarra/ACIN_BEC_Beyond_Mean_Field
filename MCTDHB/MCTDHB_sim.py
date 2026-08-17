@@ -27,16 +27,16 @@ Notation:
 - U0: Interaction strength (contact interaction)
 """
 
-import time
 import numpy as np
 import jax.numpy as jnp
-from jax import jit, vmap, random, grad, value_and_grad
 from jax.lax import scan, fori_loop
 from functools import partial
 import jax.debug as jdebug
+import pdb
 import os
 import csv
 from typing import Dict, Tuple, NamedTuple
+from dataclasses import dataclass, field
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -55,8 +55,8 @@ class MCTDHBState(NamedTuple):
     phi_e: jnp.ndarray  # Shape: (num_grid_points,)
     config_coeffs: jnp.ndarray  # Shape: (N+1,)
 
-
-class MCTDHBParams(NamedTuple):
+@dataclass
+class MCTDHBParams():
     """
     MCTDHB simulation parameters.
     """
@@ -70,25 +70,38 @@ class MCTDHBParams(NamedTuple):
     x_max: float
     num_grid_points: int
     
-    # Double-well potential
-    V0: float
-    a: float
-    omega: float
-    
     # Time stepping
     dt: float
     num_steps: int
     
-    @property
-    def dx(self) -> float:
-        """Grid spacing."""
-        return (self.x_max - self.x_min) / (self.num_grid_points - 1)
+    # @property
+    # def dx(self) -> float:
+    #     """Grid spacing."""
+    #     return (self.x_max - self.x_min) / (self.num_grid_points - 1)
     
-    @property
-    def x_grid(self) -> jnp.ndarray:
-        """Spatial grid array."""
-        return jnp.linspace(self.x_min, self.x_max, self.num_grid_points)
+    # @property
+    # def x_grid(self) -> jnp.ndarray:
+    #     """Spatial grid array."""
+    #     return jnp.linspace(self.x_min, self.x_max, self.num_grid_points)
 
+    # Computed at initialization, stored as regular fields
+    dx: float = field(init=False)
+    x_grid: jnp.ndarray = field(init=False)
+    t_end: float = field(init=False)
+    
+    def __post_init__(self):
+        # These run once during initialization
+        object.__setattr__(self, 'dx', (self.x_max - self.x_min) / (self.num_grid_points - 1))
+        object.__setattr__(self, 'x_grid', jnp.linspace(self.x_min, self.x_max, self.num_grid_points))
+        object.__setattr__(self, 't_end', self.dt*self.num_steps)
+
+    def plot_parameters(self):
+        print(f"Particle number N = {self.N}")
+        print(f"Grid points = {self.num_grid_points}")
+        print(f"Grid spacing dx = {self.dx:.4f} um")
+        print(f"Time step dt = {self.dt} ms")
+        print(f"Total time = {self.t_end:.2f} ms")
+        
 
 class MCTDHB_Results:
     """Container for MCTDHB simulation results."""
@@ -250,15 +263,6 @@ def inner_product(f: jnp.ndarray, g: jnp.ndarray, dx: float, num_grid_points: in
 # =============================================================================
 # Double-Well Potential
 # =============================================================================
-
-# TODO: Insert the actual potential coeffs
-
-# @jit
-def a_2_potential(A: float) -> float:
-    return 1
-# @jit
-def a_4_potential(A: float) -> float:
-    return 1
 
 # @jit
 def double_well_potential_with_control(x_grid_squared: jnp.ndarray, x_grid_fourth: jnp.ndarray, A: float) -> jnp.ndarray:
@@ -547,127 +551,6 @@ def compute_tunnel_coupling(phi_g: jnp.ndarray, phi_e: jnp.ndarray, V: jnp.ndarr
 # Coefficient Evolution (Grond Eq. 19-20)
 # =============================================================================
 
-# # @partial(jit, static_argnums=(2,))
-# def construct_two_mode_hamiltonian(Omega: float, two_body_W: Dict[str, jnp.ndarray],
-#                                     N: int) -> jnp.ndarray:
-#     """
-#     Construct the Hamiltonian matrix for coefficient evolution.
-    
-#     H = -Omega J_x + (1/2) Sum' a^dagger_k a^dagger_q a_l a_m W_{kqlm},
-#     where J_x = (1/2)(a^dagger_g a_g - a^dagger_e a_e) is the population imbalance operator.
-    
-#     Hence, a configuration |k, N-k> =: |k> is mapped to imbalance + interation term:
-#     imbalance term = -Omega*(k-N/2)*|k>
-#     interaction term = sqrt(k*(k-1)*(N-k+1)*(N-k+2))*W_eegg*|k-2>
-#     + ( 2*(N-k)*sqrt(k*(N-k+1))*W_eeeg + 2*(k-1)*sqrt(k*(N-k+1))*W_eggg )*|k-1>
-#     + ( k*(k-1)*W_gggg + (N-k)*(N-k-1)*W_eeee + 4*k*(N-k)*W_egeg )*|k>
-#     + ( 2*(N-k-1)*sqrt((N-k)*(k+1))*W_geee + 2*k*sqrt((N-k)*(k+1))*W_ggge )*|k+1>
-#     + sqrt( (N-k)*(N-k-1)*(k+1)*(k+2) )*W_ggee*|k+2>
-#     """
-#     num_configs = N + 1
-#     k_values = jnp.arange(num_configs, dtype=jnp.float32)
-    
-#     # Initialize Hamiltonian matrix
-#     H_mat = jnp.zeros((num_configs, num_configs), dtype=jnp.complex128)
-    
-#     # Extract interaction coefficients
-#     W_gggg = two_body_W['W_gggg']
-#     W_eeee = two_body_W['W_eeee']
-#     W_egeg = two_body_W['W_egeg']
-#     W_eegg = two_body_W['W_eegg']
-#     W_eeeg = two_body_W['W_eeeg']
-#     W_eggg = two_body_W['W_eggg']
-#     W_geee = two_body_W['W_geee']
-#     W_ggge = two_body_W['W_ggge']
-#     W_ggee = two_body_W['W_ggee']
-    
-#     # --- Diagonal Terms (k -> k) ---
-#     # Imbalance term: -Omega * (k - N/2)
-#     imbalance = -Omega * (k_values - N / 2.0)
-    
-#     # Interaction diagonal: k*(k-1)*W_gggg + (N-k)*(N-k-1)*W_eeee + 4*k*(N-k)*W_egeg
-#     interaction_diag = (
-#         k_values * (k_values - 1) * W_gggg +
-#         (N - k_values) * (N - k_values - 1) * W_eeee +
-#         4 * k_values * (N - k_values) * W_egeg
-#     )
-    
-#     diag_total = imbalance + interaction_diag
-#     H_mat = H_mat.at[jnp.arange(num_configs), jnp.arange(num_configs)].set(diag_total)
-    
-#     # --- Lower Diagonal 1 (k -> k-1) ---
-#     # Valid for k >= 1
-#     k_lower1 = jnp.arange(1, num_configs)
-#     row_lower1 = k_lower1 - 1
-    
-#     # Term: 2*(N-k)*sqrt(k*(N-k+1))*W_eeeg + 2*(k-1)*sqrt(k*(N-k+1))*W_eggg
-#     sqrt_fact_lower1 = jnp.sqrt(k_lower1 * (N - k_lower1 + 1))
-#     term1_lower1 = 2 * (N - k_lower1) * sqrt_fact_lower1 * W_eeeg
-#     term2_lower1 = 2 * (k_lower1 - 1) * sqrt_fact_lower1 * W_eggg
-#     val_lower1 = term1_lower1 + term2_lower1
-    
-#     H_mat = H_mat.at[row_lower1, k_lower1].set(val_lower1)
-    
-#     # --- Lower Diagonal 2 (k -> k-2) ---
-#     # Valid for k >= 2
-#     k_lower2 = jnp.arange(2, num_configs)
-#     row_lower2 = k_lower2 - 2
-    
-#     # Term: sqrt(k*(k-1)*(N-k+1)*(N-k+2))*W_eegg
-#     sqrt_fact_lower2 = jnp.sqrt(
-#         k_lower2 * (k_lower2 - 1) * (N - k_lower2 + 1) * (N - k_lower2 + 2)
-#     )
-#     val_lower2 = sqrt_fact_lower2 * W_eegg
-    
-#     H_mat = H_mat.at[row_lower2, k_lower2].set(val_lower2)
-    
-#     # --- Upper Diagonal 1 (k -> k+1) ---
-#     # Valid for k <= N-1
-#     k_upper1 = jnp.arange(0, num_configs - 1)
-#     row_upper1 = k_upper1 + 1
-    
-#     # Term: 2*(N-k-1)*sqrt((N-k)*(k+1))*W_geee + 2*k*sqrt((N-k)*(k+1))*W_ggge
-#     sqrt_fact_upper1 = jnp.sqrt((N - k_upper1) * (k_upper1 + 1))
-#     term1_upper1 = 2 * (N - k_upper1 - 1) * sqrt_fact_upper1 * W_geee
-#     term2_upper1 = 2 * k_upper1 * sqrt_fact_upper1 * W_ggge
-#     val_upper1 = term1_upper1 + term2_upper1
-    
-#     H_mat = H_mat.at[row_upper1, k_upper1].set(val_upper1)
-    
-#     # --- Upper Diagonal 2 (k -> k+2) ---
-#     # Valid for k <= N-2
-#     k_upper2 = jnp.arange(0, num_configs - 2)
-#     row_upper2 = k_upper2 + 2
-    
-#     # Term: sqrt((N-k)*(N-k-1)*(k+1)*(k+2))*W_ggee
-#     sqrt_fact_upper2 = jnp.sqrt(
-#         (N - k_upper2) * (N - k_upper2 - 1) * (k_upper2 + 1) * (k_upper2 + 2)
-#     )
-#     val_upper2 = sqrt_fact_upper2 * W_ggee
-    
-#     H_mat = H_mat.at[row_upper2, k_upper2].set(val_upper2)
-    
-#     return H_mat
-
-
-# # @jit
-# def evolve_coefficients(config_coeffs: jnp.ndarray, H_mat: jnp.ndarray,
-#                          dt: float, hbar: float) -> jnp.ndarray:
-#     """
-#     Evolve configuration coefficients: i*hbar dC/dt = H C
-    
-#     Using first-order Euler: C(t+dt) = C(t) - i H C dt / hbar
-#     """
-#     dC_dt = -1j * H_mat @ config_coeffs / hbar
-#     new_coeffs = config_coeffs + dt * dC_dt
-    
-#     # Normalize
-#     norm = jnp.linalg.norm(new_coeffs)
-#     new_coeffs = new_coeffs / jnp.where(norm > 1e-10, norm, 1.0)
-    
-#     return new_coeffs
-
-
 # @partial(jit, static_argnums=(1,))
 def construct_banded_hamiltonian(Omega: float, two_body_W: Dict[str, jnp.ndarray],
                                   N: int) -> Dict[str, jnp.ndarray]:
@@ -830,70 +713,93 @@ def mctdhb_single_step(state: MCTDHBState, params: MCTDHBParams,
 # Initial Conditions
 # =============================================================================
 
-def initialize_orbitals_harmonic_oscillator(params: MCTDHBParams) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def initialize_orbitals_single_particle_eigenstates(params: MCTDHBParams, A: float = 0.5) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Initialize orbitals as ground and first excited states of harmonic oscillator.
+    Initialize orbitals as ground and first excited states of the single-particle Hamiltonian.
     
-    phi_0(x) = (m*omega/(pi*hbar))^(1/4) exp(-m*omega x^2 / (2*hbar))
-    phi_1(x) = (m*omega/(pi*hbar))^(1/4) sqrt(2*m*omega/hbar) x exp(-m*omega x^2 / (2*hbar))
+    Solves the eigenvalue problem H phi = E phi for the double-well potential with control A.
+    H = -hbar^2/(2m) d^2/dx^2 + V(x, A)
     
-    These are then adapted to the double-well potential.
+    Parameters:
+        params: MCTDHB parameters containing grid and physical constants
+        A: Control parameter for the double-well potential
+    
+    Returns:
+        phi_g: Ground state orbital
+        phi_e: First excited state orbital
     """
     x_grid = params.x_grid
     hbar = params.hbar
     m = params.m
-    omega = params.omega
-    
-    # Harmonic oscillator length
-    a_ho = jnp.sqrt(hbar / (m * omega))
-    
-    # Ground state
-    norm_factor = (1.0 / (jnp.pi * a_ho**2))**0.25
-    phi_g = norm_factor * jnp.exp(-x_grid**2 / (2 * a_ho**2))
-    
-    # First excited state
-    phi_e = norm_factor * jnp.sqrt(2) * (x_grid / a_ho) * jnp.exp(-x_grid**2 / (2 * a_ho**2))
-    
-    # Normalize
     dx = params.dx
     num_grid_points = params.num_grid_points
     
+    # Compute potential V(x) for given A
+    x_grid_squared = x_grid**2
+    x_grid_fourth = x_grid**4
+    V = double_well_potential_with_control(x_grid_squared, x_grid_fourth, A)
+    
+    # Construct Hamiltonian matrix
+    # Kinetic energy coefficient
+    c_kin = hbar**2 / (2 * m * dx**2)
+    
+    # Diagonal elements: 2 * c_kin + V_i
+    diag = 2 * c_kin + V
+    
+    # Off-diagonal elements: -c_kin
+    off_diag = -c_kin * jnp.ones(num_grid_points - 1)
+    
+    # Build dense Hamiltonian matrix
+    H = jnp.diag(diag) + jnp.diag(off_diag, 1) + jnp.diag(off_diag, -1)
+    
+    # Solve eigenvalue problem
+    eigenvalues, eigenvectors = jnp.linalg.eigh(H)
+    
+    # Extract ground state (index 0) and first excited state (index 1)
+    # eigenvectors are columns, normalized such that sum(|phi|^2) = 1
+    # We need integral(|phi|^2) dx = 1, so scale by 1/sqrt(dx)
+    phi_g = eigenvectors[:, 0] / jnp.sqrt(dx)
+    phi_e = eigenvectors[:, 1] / jnp.sqrt(dx)
+    
+    # Ensure real values (should be real for 1D real potential, but remove tiny imaginary parts if any)
+    phi_g = jnp.real(phi_g)
+    phi_e = jnp.real(phi_e)
+    
+    # Normalize using integration norm to be safe
     norm_g = jnp.sqrt(jnp.abs(inner_product(phi_g, phi_g, dx, num_grid_points)))
     norm_e = jnp.sqrt(jnp.abs(inner_product(phi_e, phi_e, dx, num_grid_points)))
     
     phi_g = phi_g / norm_g
     phi_e = phi_e / norm_e
     
-    # Orthonormalize
+    # Orthonormalize (should already be orthogonal from eigh, but ensure numerical stability)
     phi_g, phi_e = gram_schmidt_orthonormalize(phi_g, phi_e, dx, num_grid_points)
     
     return phi_g, phi_e
 
 
-def initialize_coherent_state_two_mode(N: int, initial_n: float = 0.0, 
-                                        initial_phase: float = 0.0) -> jnp.ndarray:
+def initialize_coherent_state_two_mode(N: int, initial_phase: float = 0.0) -> jnp.ndarray:
     """
-    Initialize configuration coefficients for coherent state in two-mode system.
+    Initialize configuration coefficients peaked at the ground state (k=N).
     
     Configurations are |k, N-k> where k=0,...,N.
-    Coherent state has binomial distribution centered at k = N/2.
+    Distribution is centered at k = N (all particles in ground orbital).
     """
     num_configs = N + 1
     k_values = jnp.arange(num_configs, dtype=jnp.float32)
     
-    # Coherent state: binomial distribution
-    # For large N, use normal approximation
-    mean = N / 2.0
-    std = jnp.sqrt(N / 4.0)
+    # Ground state peaked distribution: Gaussian centered at N
+    mean = float(N)
+    std = jnp.sqrt(N) / 4.0
     
-    binomial_coeffs = jnp.exp(-0.5 * ((k_values - mean) / std)**2)
+    gaussian_coeffs = jnp.exp(-0.5 * ((k_values - mean) / std)**2)
     
     # Normalize
-    binomial_coeffs = binomial_coeffs / jnp.linalg.norm(binomial_coeffs)
+    gaussian_coeffs = gaussian_coeffs / jnp.linalg.norm(gaussian_coeffs)
     
     # Add phase gradient for initial population imbalance
     phases = initial_phase * (k_values - N / 2)
-    config_coeffs = binomial_coeffs * jnp.exp(1j * phases)
+    config_coeffs = gaussian_coeffs * jnp.exp(1j * phases)
     
     # Normalize again
     config_coeffs = config_coeffs / jnp.linalg.norm(config_coeffs)
@@ -901,7 +807,7 @@ def initialize_coherent_state_two_mode(N: int, initial_n: float = 0.0,
     return config_coeffs
 
 
-def mctdhb_initialize(params: MCTDHBParams, initial_n: float = 0.0,
+def mctdhb_initialize(params: MCTDHBParams, initial_A: float = 0.5,
                       initial_phase: float = 0.0) -> MCTDHBState:
     """
     Initialize complete MCTDHB state.
@@ -915,11 +821,11 @@ def mctdhb_initialize(params: MCTDHBParams, initial_n: float = 0.0,
         Initial MCTDHBState
     """
     # Initialize orbitals
-    phi_g, phi_e = initialize_orbitals_harmonic_oscillator(params)
+    phi_g, phi_e = initialize_orbitals_single_particle_eigenstates(params, initial_A)
     
     # Initialize coefficients
     config_coeffs = initialize_coherent_state_two_mode(
-        params.N, initial_n, initial_phase
+        params.N, initial_phase
     )
     
     return MCTDHBState(phi_g, phi_e, config_coeffs)
@@ -954,57 +860,69 @@ def compute_observables(state: MCTDHBState, params: MCTDHBParams,
     k_values = jnp.arange(num_configs, dtype=jnp.float32)
     
     # Population imbalance from coefficients
-    probs = jnp.abs(config_coeffs)**2
-    n_values = (2 * k_values - N) / N  # Normalized to [-1, 1]
+    configuration_probs = jnp.abs(config_coeffs)**2
     
-    n_expect = jnp.sum(probs * n_values)
-    n_squared_expect = jnp.sum(probs * n_values**2)
-    n_variance = n_squared_expect - n_expect**2
+    # Probability densities
+    prob_density_g = jnp.abs(phi_g)**2
+    prob_density_e = jnp.abs(phi_e)**2
     
-    # Squeezing parameter
-    squeezing_parameter = N * n_variance
-    
-    # Relative phase from coherence
-    if num_configs > 1:
-        weights = jnp.sqrt((N - k_values[:-1]) * (k_values[1:]))
-        rho_01 = jnp.sum(jnp.conj(config_coeffs[:-1]) * config_coeffs[1:] * weights)
-        phi_expect = jnp.angle(rho_01)
-    else:
-        phi_expect = 0.0
-    
-    # Orbital overlap
-    orbital_overlap = inner_product(phi_g, phi_e, dx, num_grid_points)
-    
-    # Energy expectation
-    # E = <Psi|H|Psi> = Sum_k |C_k|^2 E_k + orbital contributions
-    densities = compute_reduced_densities(config_coeffs, N)
-    
-    # Single-particle energy
-    h_gg = hamiltonian_matrix_element(phi_g, phi_g, V, hbar, m, dx, num_grid_points)
-    h_ee = hamiltonian_matrix_element(phi_e, phi_e, V, hbar, m, dx, num_grid_points)
-    
-    single_particle_energy = densities['rho_gg'] * jnp.real(h_gg) + densities['rho_ee'] * jnp.real(h_ee)
-    
-    # Interaction energy
-    two_body_W = compute_all_two_body_matrix_elements(
-        phi_g, phi_e, params.U0, dx, num_grid_points
+    # Integrate over left well (x < 0)
+    likelihood_left_g = trapz_integrate(
+        prob_density_g, dx, num_grid_points//2
     )
-    
-    interaction_energy = (
-        0.5 * two_body_W['W_gggg'] * densities['rho_gggg'] +
-        0.5 * two_body_W['W_eeee'] * densities['rho_eeee'] +
-        two_body_W['W_ggee'] * densities['rho_gege']
+    likelihood_left_e = trapz_integrate(
+        prob_density_e, dx, num_grid_points//2
     )
+    # Overlap in left well
+    overlap_left_ge = inner_product(
+        phi_g, phi_e, dx, num_grid_points//2
+    )
+
+    n_expect = jnp.sum( ((2*likelihood_left_g-1)*k_values + (2*likelihood_left_e-1)*(N-k_values)) *configuration_probs)
+    n_variance = jnp.sum( (jnp.conj(overlap_left_ge)*overlap_left_ge* ( (k_values+1)*(N-k_values)+k_values*(N-k_values+1) )/(N*N)) *configuration_probs)
+    squeezing_parameter = N*n_variance
     
-    energy_expect = single_particle_energy + jnp.real(interaction_energy)
+    # # Relative phase from coherence
+    # if num_configs > 1:
+    #     weights = jnp.sqrt((N - k_values[:-1]) * (k_values[1:]))
+    #     rho_01 = jnp.sum(jnp.conj(config_coeffs[:-1]) * config_coeffs[1:] * weights)
+    #     phi_expect = jnp.angle(rho_01)
+    # else:
+    #     phi_expect = 0.0
+    
+    # # Orbital overlap
+    # orbital_overlap = inner_product(phi_g, phi_e, dx, num_grid_points)
+    
+    # # Energy expectation
+    # # E = <Psi|H|Psi> = Sum_k |C_k|^2 E_k + orbital contributions
+    # densities = compute_reduced_densities(config_coeffs, N)
+    
+    # # Single-particle energy
+    # h_gg = hamiltonian_matrix_element(phi_g, phi_g, V, hbar, m, dx, num_grid_points)
+    # h_ee = hamiltonian_matrix_element(phi_e, phi_e, V, hbar, m, dx, num_grid_points)
+    
+    # single_particle_energy = densities['rho_gg'] * jnp.real(h_gg) + densities['rho_ee'] * jnp.real(h_ee)
+    
+    # # Interaction energy
+    # two_body_W = compute_all_two_body_matrix_elements(
+    #     phi_g, phi_e, params.U0, dx, num_grid_points
+    # )
+    
+    # interaction_energy = (
+    #     0.5 * two_body_W['W_gggg'] * densities['rho_gggg'] +
+    #     0.5 * two_body_W['W_eeee'] * densities['rho_eeee'] +
+    #     two_body_W['W_ggee'] * densities['rho_gege']
+    # )
+    
+    # energy_expect = single_particle_energy + jnp.real(interaction_energy)
     
     return {
         'n_expect': n_expect,
         'n_variance': n_variance,
         'squeezing_parameter': squeezing_parameter,
-        'phi_expect': phi_expect,
-        'energy_expect': energy_expect,
-        'orbital_overlap': orbital_overlap
+        # 'phi_expect': phi_expect,
+        # 'energy_expect': energy_expect,
+        # 'orbital_overlap': orbital_overlap
     }
 
 
@@ -1044,9 +962,12 @@ def mctdhb_simulate(A_array: jnp.ndarray, params: MCTDHBParams,
     
     # Current state
     state = initial_state
-
+    
     # Run simulation
     for step in range(num_steps):
+
+        pdb.set_trace()
+        
         # Get control values for this step
         A_control = A_array[step] if step < len(A_array) else A_array[-1]
         
@@ -1077,9 +998,9 @@ def mctdhb_simulate(A_array: jnp.ndarray, params: MCTDHBParams,
     results.n_expect = jnp.array([obs['n_expect'] for obs in observables_list])
     results.n_variance = jnp.array([obs['n_variance'] for obs in observables_list])
     results.squeezing_parameter = jnp.array([obs['squeezing_parameter'] for obs in observables_list])
-    results.phi_expect = jnp.array([obs['phi_expect'] for obs in observables_list])
-    results.energy_expect = jnp.array([obs['energy_expect'] for obs in observables_list])
-    results.orbital_overlap = jnp.array([obs['orbital_overlap'] for obs in observables_list])
+    # results.phi_expect = jnp.array([obs['phi_expect'] for obs in observables_list])
+    # results.energy_expect = jnp.array([obs['energy_expect'] for obs in observables_list])
+    # results.orbital_overlap = jnp.array([obs['orbital_overlap'] for obs in observables_list])
     
     # Store control fields
     results.A_array = A_array
@@ -1088,8 +1009,42 @@ def mctdhb_simulate(A_array: jnp.ndarray, params: MCTDHBParams,
 
 
 # =============================================================================
-# Demonstration and Testing
+# Parameter insertion, demonstration and Testing
 # =============================================================================
+
+def create_MCTDHB_parameters() -> MCTDHBParams:
+
+    N=4000
+    mass_Rb87 = 1.44316060e-25
+    hbar_SI = 1.054589e-34
+    g_1D_calibrated = 6.924 # experimentally identified, in scaled units already
+    
+    params = MCTDHBParams(
+        # physical parameters
+        N    = N,          # Particle number
+        hbar = 1.0,        # Reduced Planck constant (1 because eliminated by division of rhs's & rescaling of m)
+        m    = mass_Rb87/hbar_SI*((1e-6)**2)/1e-3,  # kg * um^2 / (J*s * ms), divided by hbar_SI to rescale the RHS of the Schrodinger
+        U0   = g_1D_calibrated/(N-1),  # interaction strength per particle
+        
+        # Spatial grid
+        x_min=-3.0,
+        x_max=3.0,
+        num_grid_points=512, # results in dx = 0.01172
+        
+        # Time stepping
+        dt=2.5e-4,
+        num_steps=int(1e4)
+    )
+    
+    return params
+
+# @jit
+def a_2_potential(A: float) -> float:
+    A_s = 0.3938
+    return 0.5*361.2383*jnp.heaviside(A_s-A,1.)*(A-A_s) - 0.25*248.5682*jnp.heaviside(A-A_s,1.)*(A-A_s)
+# @jit
+def a_4_potential(A: float) -> float:
+    return 64.2966
 
 def run_mctdhb_demo():
     """Run a demonstration MCTDHB simulation."""
@@ -1098,39 +1053,15 @@ def run_mctdhb_demo():
     print("=" * 60)
     
     # System parameters
-    params = MCTDHBParams(
-        N=5000,           # Particle number (smaller for demo)
-        hbar=1.0,        # Reduced Planck constant
-        m=1.0,           # Particle mass
-        U0=0.1,          # Interaction strength
-        
-        # Spatial grid
-        x_min=-10.0,
-        x_max=10.0,
-        num_grid_points=256,
-        
-        # Double-well potential
-        V0=5.0,          # Barrier height
-        a=1.0,           # Barrier width
-        omega=0.5,       # Trap frequency
-        
-        # Time stepping
-        dt=0.01,
-        num_steps=30
-    )
-    
-    print(f"Particle number N = {params.N}")
-    print(f"Grid points = {params.num_grid_points}")
-    print(f"Grid spacing dx = {params.dx:.4f}")
-    print(f"Time step dt = {params.dt}")
-    print(f"Total time = {params.dt * params.num_steps:.2f}")
+    params = create_MCTDHB_parameters()
+    params.plot_parameters()
     
     # Control fields (constant for demo)
-    A_array = jnp.ones(params.num_steps) * 1.0
+    A_array = jnp.ones(params.num_steps) * 0.5
     
     # Initialize state
     print("\nInitializing MCTDHB state...")
-    initial_state = mctdhb_initialize(params, initial_n=0.0, initial_phase=0.0)
+    initial_state = mctdhb_initialize(params, initial_A=0.5, initial_phase=0.0)
     
     # Verify orbital orthonormality
     dx = params.dx
@@ -1158,8 +1089,6 @@ def run_mctdhb_demo():
     print(f"  Population imbalance: n = {results.n_expect[-1]:.6f}")
     print(f"  Variance: Var(n) = {results.n_variance[-1]:.6e}")
     print(f"  Squeezing parameter: xi^2 = {results.squeezing_parameter[-1]:.6e}")
-    print(f"  Energy: E = {results.energy_expect[-1]:.6f}")
-    print(f"  Orbital overlap: |<phi_g|phi_e>| = {jnp.abs(results.orbital_overlap[-1]):.6e}")
     
     # Plot results
     print("\nGenerating plots...")
